@@ -119,6 +119,9 @@
     .msg.ok { color: #22c55e; }
     .msg.err { color: #ef4444; }
     .msg.info { color: #888; }
+    details.manual { margin-top: 18px; border-top: 1px solid #1e1e1e; padding-top: 12px; }
+    details.manual > summary { cursor: pointer; color: #888; font-size: 0.8rem; }
+    details.manual > summary:hover { color: #c7c8ff; }
 
     /* Voice */
     .mic-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: 8px 0 18px; }
@@ -277,7 +280,7 @@
     <div class="panel hidden" id="panel-youtube">
       <div class="card">
         <h2>YouTube</h2>
-        <p class="help">Paste a video link. YouTube will not hand transcripts to a web page, so you copy the transcript yourself and paste it here. Level 3 makes this automatic.</p>
+        <p class="help">Paste a video link and click <b>Capture automatically</b>. Your server fetches what was said in the video and saves it. If that fails, you can still paste the transcript yourself.</p>
         <div class="row tight">
           <input type="url" id="ytUrl" class="grow" placeholder="https://www.youtube.com/watch?v=...">
           <button id="ytLoad">Load video</button>
@@ -293,6 +296,13 @@
             </div>
           </div>
 
+          <div class="row">
+            <button id="ytAuto">✨ Capture automatically</button>
+            <span class="msg" id="ytAutoMsg"></span>
+          </div>
+
+          <details class="manual" id="ytManual">
+          <summary>Didn't work? Paste the transcript yourself</summary>
           <div style="margin-top:18px">
             <ol class="steps">
               <li>Click <b>Open video for transcript</b> below.</li>
@@ -314,6 +324,7 @@
             <button id="ytSave">Save to Brain</button>
             <span class="msg" id="ytMsg"></span>
           </div>
+          </details>
         </div>
       </div>
     </div>
@@ -348,9 +359,16 @@
     <div class="panel hidden" id="panel-url">
       <div class="card">
         <h2>Web article</h2>
-        <p class="help">Browsers do not let one website read another website, for your own security. So paste the article text yourself for now. Level 3 makes this automatic.</p>
+        <p class="help">Paste an article link and click <b>Fetch &amp; save automatically</b>. Your server reads the page and saves the text. Pages behind a login or built with JavaScript may not work. For those, paste the text yourself.</p>
         <label class="field" for="urlInput" style="margin-top:0">Link</label>
         <input type="url" id="urlInput" placeholder="https://...">
+        <div class="row">
+          <button id="urlAuto">✨ Fetch &amp; save automatically</button>
+          <span class="msg" id="urlAutoMsg"></span>
+        </div>
+
+        <details class="manual" id="urlManual">
+        <summary>Didn't work? Paste the article text yourself</summary>
         <label class="field" for="urlTitle">Title (optional)</label>
         <input type="text" id="urlTitle" placeholder="What is this article called?">
         <ol class="steps" style="margin-top:14px">
@@ -365,6 +383,7 @@
           <span class="hint" id="urlCount"></span>
           <span class="msg" id="urlMsg"></span>
         </div>
+        </details>
       </div>
     </div>
 
@@ -798,6 +817,36 @@
   // ---------------------------------------------------------------------------
   let ytId = null
 
+  // ---------------------------------------------------------------------------
+  // Server-side capture (Level 3). Calls an edge function on Supabase, which
+  // can fetch pages and transcripts that a browser is not allowed to.
+  // supabase-js sends your login token along automatically.
+  // ---------------------------------------------------------------------------
+  async function runCapture(fnName, link, btnId, msgId, workingText) {
+    const btn = $(btnId)
+    const label = btn.textContent
+    btn.disabled = true
+    btn.textContent = 'Working...'
+    setMsg(msgId, workingText, 'info')
+    try {
+      const { data, error } = await db.functions.invoke(fnName, { body: { url: link } })
+      if (error) {
+        // The function's own explanation is inside the response body
+        let reason = error.message
+        try {
+          const body = await error.context.json()
+          if (body && body.error) reason = body.error
+        } catch (e) {}
+        throw new Error(reason)
+      }
+      if (!data || !data.ok) throw new Error((data && data.error) || 'Something went wrong.')
+      return data
+    } finally {
+      btn.disabled = false
+      btn.textContent = label
+    }
+  }
+
   function parseYouTubeId(input) {
     const s = (input || '').trim()
     if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s
@@ -840,6 +889,28 @@
   $('ytLoad').addEventListener('click', loadYouTube)
   $('ytUrl').addEventListener('keydown', e => { if (e.key === 'Enter') loadYouTube() })
   $('ytUrl').addEventListener('paste', () => setTimeout(loadYouTube, 50))
+
+  $('ytAuto').addEventListener('click', async () => {
+    if (!ytId) { setMsg('ytAutoMsg', 'Load a video first.', 'err'); return }
+    try {
+      const r = await runCapture('capture-youtube', 'https://www.youtube.com/watch?v=' + ytId,
+        'ytAuto', 'ytAutoMsg', 'Fetching the transcript... this can take up to 30 seconds.')
+      const how = r.has_transcript
+        ? 'transcript, ' + r.chars.toLocaleString() + ' characters'
+        : 'no transcript was available, so the description was saved instead'
+      $('ytUrl').value = ''
+      $('ytTranscript').value = ''
+      $('ytCount').textContent = ''
+      $('ytDetails').classList.add('hidden')
+      $('ytManual').open = false
+      ytId = null
+      setMsg('ytAutoMsg', '')
+      setMsg('ytLoadMsg', '✓ Saved "' + r.title + '" (' + how + '). Paste another link any time.', 'ok')
+    } catch (e) {
+      setMsg('ytAutoMsg', '✗ ' + e.message, 'err')
+      $('ytManual').open = true
+    }
+  })
 
   $('ytTranscript').addEventListener('input', () => { $('ytCount').textContent = countLabel($('ytTranscript').value) })
 
@@ -977,6 +1048,22 @@
   // ---------------------------------------------------------------------------
   // URL
   // ---------------------------------------------------------------------------
+  $('urlAuto').addEventListener('click', async () => {
+    const raw = $('urlInput').value.trim()
+    let url
+    try { url = new URL(raw) } catch (e) { setMsg('urlAutoMsg', 'Paste the full link, starting with https://', 'err'); return }
+    if (!/^https?:$/.test(url.protocol)) { setMsg('urlAutoMsg', 'Only http and https links work here.', 'err'); return }
+    try {
+      const r = await runCapture('capture-url', url.href, 'urlAuto', 'urlAutoMsg', 'Reading the page...')
+      $('urlInput').value = ''
+      $('urlManual').open = false
+      setMsg('urlAutoMsg', '✓ Saved "' + r.title + '" (' + r.chars.toLocaleString() + ' characters)', 'ok')
+    } catch (e) {
+      setMsg('urlAutoMsg', '✗ ' + e.message, 'err')
+      $('urlManual').open = true
+    }
+  })
+
   $('urlText').addEventListener('input', () => { $('urlCount').textContent = countLabel($('urlText').value) })
   $('urlSave').addEventListener('click', () => {
     runSave('urlSave', 'urlMsg', () => {
