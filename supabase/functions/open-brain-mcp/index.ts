@@ -67,7 +67,7 @@ const TOOLS = [
   {
     name: "search_thoughts",
     description:
-      "Search Dre's personal brain (notes, YouTube transcripts, PDF lecture slides, Telegram messages) for thoughts containing the given words. Returns up to 10 matches, newest first. Use short keyword queries like 'scalping' or 'MGT-420'.",
+      "Search Dre's personal brain (notes, YouTube transcripts, PDF lecture slides, Telegram messages) by MEANING, not just exact words: 'how to get new clients' also finds notes about customer acquisition. Returns up to 10 matches, most similar first, each with a similarity score (0 to 1). Natural phrases and questions work well. Each result also lists 'connected' thoughts from Dre's thought graph (related ideas linked automatically); mention useful connections to Dre. Falls back to keyword matching if semantic search is unavailable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -133,7 +133,109 @@ function preview(rows: Thought[]) {
   });
 }
 
+// Turns text into an embedding through the generate-embedding function.
+// Returns null on any failure so search can fall back to keywords.
+async function embed(text: string): Promise<number[] | null> {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/generate-embedding`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return Array.isArray(data.embedding) ? data.embedding : null;
+  } catch {
+    return null;
+  }
+}
+
+// The thought graph: for each id, the thoughts linked to it (either direction),
+// strongest link first, with a short preview. Never throws: on any error the
+// search still returns, just without connections.
+const LINK_PREVIEW_CHARS = 200;
+async function linkedThoughts(ids: string[]) {
+  const out = new Map<string, { id: string; link_strength: number; preview: string }[]>();
+  if (ids.length === 0) return out;
+  try {
+    const list = ids.join(",");
+    const { data: links, error } = await supabase
+      .from("thought_links")
+      .select("source_thought_id, target_thought_id, similarity_score")
+      .or(`source_thought_id.in.(${list}),target_thought_id.in.(${list})`)
+      .order("similarity_score", { ascending: false })
+      .limit(200);
+    if (error || !links) return out;
+
+    const otherIds = new Set<string>();
+    for (const l of links) {
+      otherIds.add(l.source_thought_id);
+      otherIds.add(l.target_thought_id);
+    }
+    const { data: others } = await supabase
+      .from("thoughts")
+      .select("id, content")
+      .in("id", [...otherIds]);
+    const text = new Map((others ?? []).map((t) => [t.id, String(t.content ?? "")]));
+
+    for (const id of ids) {
+      const mine = links
+        .filter((l) => l.source_thought_id === id || l.target_thought_id === id)
+        .slice(0, 5)
+        .map((l) => {
+          const other = l.source_thought_id === id ? l.target_thought_id : l.source_thought_id;
+          const c = text.get(other) ?? "";
+          return {
+            id: other,
+            link_strength: Math.round(l.similarity_score * 1000) / 1000,
+            preview: c.length > LINK_PREVIEW_CHARS ? c.slice(0, LINK_PREVIEW_CHARS) + " …" : c,
+          };
+        });
+      out.set(id, mine);
+    }
+  } catch {
+    // ignore: connections are a bonus, never a reason for search to fail
+  }
+  return out;
+}
+
+// Semantic search: compare the MEANING of the query to every thought's embedding.
+// If that can't run (embedding failed) or finds nothing, fall back to keywords.
 async function searchThoughts(query: string) {
+  const text = String(query ?? "").trim();
+  if (!text) throw new Error("Please give a search query.");
+
+  const queryEmbedding = await embed(text);
+  if (queryEmbedding) {
+    const { data, error } = await supabase.rpc("search_thoughts", {
+      query_embedding: queryEmbedding,
+      match_threshold: 0.3,
+      match_count: 10,
+    });
+    if (error) throw new Error(error.message);
+    if (data && data.length > 0) {
+      const rows = data as (Thought & { similarity: number })[];
+      const previews = preview(rows);
+      const connected = await linkedThoughts(rows.map((r) => r.id));
+      return {
+        match: "semantic (by meaning)",
+        note: "Each result lists 'connected' thoughts from the thought graph: related ideas linked automatically by meaning, even if they didn't match the search itself.",
+        results: previews.map((p, i) => ({
+          ...p,
+          similarity: Math.round(rows[i].similarity * 1000) / 1000,
+          connected: connected.get(rows[i].id) ?? [],
+        })),
+      };
+    }
+  }
+
+  const kw = await keywordSearch(text);
+  return { ...kw, match: `keyword fallback: ${kw.match}` };
+}
+
+async function keywordSearch(query: string) {
   // Break the query into clean words. Strip symbols that would confuse the database filter.
   const words = String(query ?? "")
     .split(/\s+/)

@@ -26,3 +26,21 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/weekly-digest/deno.json"
 entrypoint = "./functions/weekly-digest/index.ts"
+
+[functions.generate-embedding]
+enabled = true
+verify_jwt = false
+import_map = "./functions/generate-embedding/deno.json"
+entrypoint = "./functions/generate-embedding/index.ts"
+
+[functions.backfill-embeddings]
+enabled = true
+verify_jwt = false
+import_map = "./functions/backfill-embeddings/deno.json"
+entrypoint = "./functions/backfill-embeddings/index.ts"
+
+[functions.backfill-links]
+enabled = true
+verify_jwt = false
+import_map = "./functions/backfill-links/deno.json"
+entrypoint = "./functions/backfill-links/index.ts"
