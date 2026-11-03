@@ -174,11 +174,11 @@ Deno.serve(async (req) => {
     }
 
     // --- Everything else: save it -----------------------------------------------
-    const { error } = await admin.from('thoughts').insert({
+    const { error } = await admin.from('thoughts').upsert({
       content: text,
       user_id: ownerUserId,
       metadata: { source: 'telegram', telegram_message_id: message.message_id },
-    })
+    }, { onConflict: 'dedup_key,user_id', ignoreDuplicates: false })
     if (error) throw error
     await reply(token, chatId, 'Saved to your brain 🧠')
     return ok()

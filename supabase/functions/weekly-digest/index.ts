@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
     if (!llmRes.ok || !llmData.text) return ok(`call-llm failed (${llmRes.status}): ${JSON.stringify(llmData)}`);
 
     const title = `Weekly digest: ${shortDate(weekAgo)} to ${shortDate(now)}`;
-    const { error: insertError } = await supabase.from('thoughts').insert({
+    const { error: insertError } = await supabase.from('thoughts').upsert({
       user_id: userId,
       content: `${title}\n\n${llmData.text.trim()}`,
       category: 'digest',
@@ -130,7 +130,7 @@ Deno.serve(async (req) => {
       summary: `${title}, covering ${used} thoughts`,
       enriched_at: now.toISOString(),
       metadata: { source: 'weekly-digest', thought_count: used },
-    });
+    }, { onConflict: 'dedup_key,user_id', ignoreDuplicates: false });
     if (insertError) return ok(`Could not save the digest: ${insertError.message}`);
 
     return ok(`Saved ${title} (${used} thoughts)`);

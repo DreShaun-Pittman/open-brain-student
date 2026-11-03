@@ -205,7 +205,7 @@ async function addThought(content: string) {
 
   const { data, error } = await supabase
     .from("thoughts")
-    .insert({ content: text, user_id: userId, metadata: { source: "mcp" } })
+    .upsert({ content: text, user_id: userId, metadata: { source: "mcp" } }, { onConflict: "dedup_key,user_id", ignoreDuplicates: false })
     .select("id, content, created_at")
     .single();
   if (error) throw new Error(error.message);

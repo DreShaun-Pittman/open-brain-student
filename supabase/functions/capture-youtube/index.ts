@@ -312,7 +312,7 @@ Deno.serve(async (req) => {
 
     const { data: thought, error: insertError } = await admin
       .from('thoughts')
-      .insert({
+      .upsert({
         user_id: user.id,
         content,
         metadata: {
@@ -323,7 +323,7 @@ Deno.serve(async (req) => {
           fetched_via: result.source,
           source: 'capture-youtube',
         },
-      })
+      }, { onConflict: 'dedup_key,user_id', ignoreDuplicates: false })
       .select('id')
       .single()
     if (insertError) throw insertError

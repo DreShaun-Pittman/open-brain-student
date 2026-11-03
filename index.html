@@ -583,7 +583,7 @@
     if (!currentUser) throw new Error('You are signed out. Sign in again.')
     const { data, error } = await db
       .from('thoughts')
-      .insert({ content, user_id: currentUser.id, metadata: metadata || {} })
+      .upsert({ content, user_id: currentUser.id, metadata: metadata || {} }, { onConflict: 'dedup_key,user_id', ignoreDuplicates: false })
       .select('id')
       .single()
     if (error) throw error
