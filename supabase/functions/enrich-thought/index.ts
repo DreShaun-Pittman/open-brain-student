@@ -11,6 +11,7 @@
 // logged as an error; it never helps. Problems are written to the logs instead.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { saveThoughtChunksSafe } from '../_shared/thought-chunks.ts';
 
 const CATEGORIES = ['idea', 'learning', 'question', 'reference', 'plan', 'reflection'];
 const MIN_LENGTH = 20;
@@ -218,7 +219,14 @@ Deno.serve(async (req) => {
       linkResult = await autoLink(supabase, record.id, newEmbedding, record.user_id);
     }
 
-    return ok(`Thought ${record.id}: ${enrichResult}; ${embedResult}; ${linkResult}`);
+    // 4. Chunk long captures so a detail buried deep inside gets its own embedding.
+    //    saveThoughtChunksSafe never throws, and does nothing under 2,000 characters.
+    const chunkCount = await saveThoughtChunksSafe(
+      supabase, record.id, content, 'enrich-thought', 'summary', record.user_id ?? undefined,
+    );
+    const chunkResult = chunkCount > 0 ? `chunked into ${chunkCount}` : 'not chunked';
+
+    return ok(`Thought ${record.id}: ${enrichResult}; ${embedResult}; ${linkResult}; ${chunkResult}`);
   } catch (err) {
     return ok(`Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
   }

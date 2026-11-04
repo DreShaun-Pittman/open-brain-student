@@ -1088,23 +1088,40 @@
   })
 
   // ---------------------------------------------------------------------------
-  // SEARCH (keyword match, not case sensitive)
+  // SEARCH (hybrid: meaning + keywords + chunks of long captures)
+  // The search-brain edge function does the work, because making an embedding
+  // needs the AI key, which can never live in this page. functions.invoke
+  // sends your own login token, so the function knows whose thoughts to search.
   // ---------------------------------------------------------------------------
   async function runSearch() {
     const q = $('searchInput').value.trim()
     if (!q) { setMsg('searchMsg', 'Type something to search for.', 'info'); return }
     setMsg('searchMsg', 'Searching...', 'info')
-    // Escape characters that have special meaning in a LIKE pattern
-    const safe = q.replace(/[\\%_]/g, ch => '\\' + ch)
     try {
-      const { data, error } = await db
-        .from('thoughts').select('id, content, created_at')
-        .ilike('content', '%' + safe + '%')
-        .order('created_at', { ascending: false }).limit(50)
+      const { data, error } = await db.functions.invoke('search-brain', { body: { query: q, limit: 20 } })
       if (error) throw error
-      const n = data.length
-      setMsg('searchMsg', n === 0 ? '' : n + (n === 50 ? '+' : '') + ' result' + (n === 1 ? '' : 's'), 'info')
-      renderThoughts($('searchList'), data, 'Nothing matched "' + q + '".')
+      if (data && data.error) throw new Error(data.error)
+      const rows = (data && data.results) || []
+      const n = rows.length
+      const mode = data && data.mode === 'keyword-only' ? ' (keywords only)' : ''
+      setMsg('searchMsg', n === 0 ? '' : n + ' result' + (n === 1 ? '' : 's') + mode, 'info')
+      renderThoughts($('searchList'), rows, 'Nothing matched "' + q + '".')
+      // Under any result that matched from inside a long capture, show the passage that matched.
+      const cards = $('searchList').querySelectorAll('.thought')
+      rows.forEach((r, i) => {
+        if (!r.matched_chunk || !cards[i]) return
+        const box = document.createElement('div')
+        box.style.cssText = 'margin-top:8px;padding:8px 10px;border-left:3px solid #7c8cff;background:rgba(124,140,255,0.08);border-radius:6px;font-size:0.92em;white-space:pre-wrap'
+        const label = document.createElement('div')
+        label.style.cssText = 'opacity:0.7;font-size:0.85em;margin-bottom:4px'
+        label.textContent = 'Matched passage (from partway through a longer capture)'
+        const passage = document.createElement('div')
+        const c = r.matched_chunk
+        passage.textContent = c.length > 600 ? c.slice(0, 600).trimEnd() + '…' : c
+        box.appendChild(label)
+        box.appendChild(passage)
+        cards[i].insertBefore(box, cards[i].querySelector('.thought-foot'))
+      })
     } catch (e) {
       setMsg('searchMsg', 'Search failed: ' + e.message, 'err')
     }

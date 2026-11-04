@@ -27,6 +27,12 @@ const MCP_ACCESS_KEY = Deno.env.get("MCP_ACCESS_KEY") ?? "";
 // most recent thought, so new thoughts still show up in your app.
 const BRAIN_USER_ID = Deno.env.get("BRAIN_USER_ID") ?? "";
 
+// Whose thoughts search_thoughts may return. This server uses the service role
+// key, which skips row-level security, so it must filter by user itself.
+// OWNER_USER_ID is the same secret your Telegram bot uses (Level 3).
+// .trim() removes spaces pasted into the secret by accident (same as telegram-bot).
+const OWNER_USER_ID = (Deno.env.get("OWNER_USER_ID") ?? "").trim() || BRAIN_USER_ID.trim();
+
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
@@ -201,34 +207,48 @@ async function linkedThoughts(ids: string[]) {
   return out;
 }
 
-// Semantic search: compare the MEANING of the query to every thought's embedding.
-// If that can't run (embedding failed) or finds nothing, fall back to keywords.
+// Hybrid search: meaning + exact keywords, fused into one ranking, and it also
+// checks the chunks of long captures so a buried detail can be found.
+// If the embedding fails, the database still runs the keyword half on its own.
 async function searchThoughts(query: string) {
   const text = String(query ?? "").trim();
   if (!text) throw new Error("Please give a search query.");
+  if (!OWNER_USER_ID) throw new Error("OWNER_USER_ID secret is not set, so search does not know whose thoughts to search.");
 
   const queryEmbedding = await embed(text);
-  if (queryEmbedding) {
-    const { data, error } = await supabase.rpc("search_thoughts", {
-      query_embedding: queryEmbedding,
-      match_threshold: 0.3,
-      match_count: 10,
-    });
-    if (error) throw new Error(error.message);
-    if (data && data.length > 0) {
-      const rows = data as (Thought & { similarity: number })[];
-      const previews = preview(rows);
-      const connected = await linkedThoughts(rows.map((r) => r.id));
-      return {
-        match: "semantic (by meaning)",
-        note: "Each result lists 'connected' thoughts from the thought graph: related ideas linked automatically by meaning, even if they didn't match the search itself.",
-        results: previews.map((p, i) => ({
-          ...p,
-          similarity: Math.round(rows[i].similarity * 1000) / 1000,
-          connected: connected.get(rows[i].id) ?? [],
-        })),
-      };
-    }
+  const { data, error } = await supabase.rpc("search_thoughts", {
+    query_text: text,
+    p_user_id: OWNER_USER_ID,
+    query_embedding: queryEmbedding,
+    match_threshold: 0.3,
+    match_count: 10,
+  });
+  if (error) throw new Error(error.message);
+
+  if (data && data.length > 0) {
+    const rows = data as (Thought & {
+      similarity: number;
+      matched_chunk: string | null;
+      match_source: string;
+      fusion_score: number;
+    })[];
+    const previews = preview(rows);
+    const connected = await linkedThoughts(rows.map((r) => r.id));
+    return {
+      match: queryEmbedding ? "hybrid (meaning + keywords)" : "keywords only (embedding unavailable)",
+      note: "When 'matched_passage' is present, the match came from partway through a longer capture: that passage is WHY it matched, so quote it. Each result also lists 'connected' thoughts from the thought graph.",
+      results: previews.map((p, i) => ({
+        ...p,
+        ...(rows[i].matched_chunk
+          ? {
+              matched_passage: rows[i].matched_chunk,
+              matched_passage_note: "(from partway through a longer capture)",
+            }
+          : {}),
+        similarity: Math.round((rows[i].similarity ?? 0) * 1000) / 1000,
+        connected: connected.get(rows[i].id) ?? [],
+      })),
+    };
   }
 
   const kw = await keywordSearch(text);

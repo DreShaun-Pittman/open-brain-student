@@ -44,3 +44,8 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/backfill-links/deno.json"
 entrypoint = "./functions/backfill-links/index.ts"
+
+[functions.backfill-chunks]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/backfill-chunks/index.ts"
